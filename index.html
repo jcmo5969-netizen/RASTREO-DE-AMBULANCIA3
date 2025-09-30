@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AmbuTrack – Hospital de Quilpué</title>
+<style>
+:root { --bg:#0b1324; --card:#111a33; --text:#e6eefc; --muted:#93a3c7; --accent:#3aa0ff; --danger:#ff5c5c; }
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #1b2747;background:#0f1830}
+.brand{display:flex;gap:12px;align-items:center}.logo{width:44px;height:44px;object-fit:contain}
+.layout{display:grid;grid-template-columns:1.6fr 1fr;gap:12px;padding:12px;min-height:calc(100vh - 68px)}
+.left .map{width:100%;height:calc(100vh - 120px);border-radius:16px;overflow:hidden}.right{display:flex;flex-direction:column;gap:12px}
+.cards{display:grid;gap:12px;grid-template-columns:1fr}.card{background:var(--card);border:1px solid #1b2747;border-radius:16px;padding:14px}
+.card h3{margin:0 0 8px;font-size:16px}.qr{display:flex;gap:10px;align-items:center}.qr .box{width:108px;height:108px;background:#fff;border-radius:8px;padding:8px}
+.meta{font-size:13px;color:var(--muted);line-height:1.3}.badge{display:inline-flex;gap:6px;align-items:center;background:#182245;padding:4px 8px;border-radius:999px;font-size:12px}
+.footer{padding:10px 16px;border-top:1px solid #1b2747;color: var(--muted);text-align:center}
+.form{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end}
+.input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #2a3b6b;background:#0f1830;color:var(--text);outline:none}
+.btn{padding:10px 14px;border-radius:12px;border:0;background:var(--accent);color:#001127;font-weight:700;cursor:pointer}
+.btn-danger{background:var(--danger);color:#1a0000}
+@media (max-width:980px){.layout{grid-template-columns:1fr} .left .map{height:60vh} .form{grid-template-columns:1fr}}
+</style>
+<script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBkYhgFQ4YG00vBsCXZI1q8hzTrlNMHpLA&libraries=places"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs/qrcode.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div style="width:44px;height:44px;border-radius:8px;background:#3aa0ff22"></div>
+    <div>
+      <h1>AmbuTrack – Hospital de Quilpué</h1>
+      <p>Monitoreo en tiempo real • Ingrese por QR desde el móvil del conductor</p>
+    </div>
+  </div>
+  <div class="status"><span id="connStatus">⏳ Conectando…</span></div>
+</header>
+
+<main class="layout">
+  <section class="left"><div id="map" class="map"></div></section>
+  <section class="right">
+    <div class="card">
+      <h3>Administración de ambulancias</h3>
+      <div class="form">
+        <div>
+          <label class="meta">ID (ej: AMB004)</label>
+          <input id="newId" class="input" placeholder="AMB004" />
+        </div>
+        <div>
+          <label class="meta">Nombre/Descripción</label>
+          <input id="newLabel" class="input" placeholder="Ambulancia 4" />
+        </div>
+        <button id="addBtn" class="btn">Agregar</button>
+      </div>
+      <div class="meta" style="margin-top:8px">Cada ambulancia tendrá su propio QR. Puedes eliminar cualquier ambulancia desde su tarjeta.</div>
+    </div>
+
+    <h2>Ambulancias</h2>
+    <div id="ambulanceList" class="cards"></div>
+  </section>
+</main>
+
+<footer class="footer"><small>© <span id="year"></span> Hospital de Quilpué · AmbuTrack</small></footer>
+
+<script>
+window.SUPABASE_URL = "https://flgjxrnmojxjokmenxjm.supabase.co";
+window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsZ2p4cm5tb2p4am9rbWVueGptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxOTIyNDMsImV4cCI6MjA3NDc2ODI0M30.qhw9L6lEI5Kzxq1vYtQvNPjERJqIXnsJkJn-tj4RNbM";
+document.getElementById('year').textContent = new Date().getFullYear();
+</script>
+
+<script>
+(function(){
+  const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  let map, markers = {}, directions = {}, ambulances = {};
+
+  function kmh(v){ if(v==null) return null; return Math.round(v * 3.6); } // m/s -> km/h
+
+  function initMap(){ try { map = new google.maps.Map(document.getElementById('map'), { center: { lat: -33.0472, lng: -71.4425 }, zoom: 12 }); } catch(e){ console.error(e); } }
+
+  function fmtEta(seconds){ if(seconds==null) return '—'; const m=Math.round(seconds/60); if(m<60) return `${m} min`; const h=Math.floor(m/60), rm=m%60; return `${h} h ${rm} min`; }
+
+  function cardHTML(a){
+    return `
+      <h3>${a.label}</h3>
+      <div class="qr">
+        <div class="box" id="qr_${a.id}"></div>
+        <div>
+          <div class="meta">Escanee este QR con el celular del conductor para activar su geolocalización.</div>
+          <div class="badge">ID: ${a.id}</div>
+          <div class="meta" id="meta_${a.id}">Sin señal…</div>
+          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap">
+            <button class="btn-danger" data-del="${a.id}">Eliminar</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderAmbulanceCards(){
+    const list = document.getElementById('ambulanceList');
+    list.innerHTML = '';
+    Object.values(ambulances).forEach(a => {
+      const url = new URL(window.location.origin + '/driver.html');
+      url.searchParams.set('amb', a.id);
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = cardHTML(a);
+      list.appendChild(card);
+      new QRCode(document.getElementById(`qr_${a.id}`), { text: url.toString(), width: 96, height: 96 });
+    });
+
+    // Bind delete buttons
+    list.querySelectorAll('button[data-del]').forEach(btn => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute('data-del');
+        if (!confirm(`¿Eliminar ambulancia ${id}?`)) return;
+        await supabase.from('ambulances').delete().eq('id', id);
+        await supabase.from('ambulance_status').delete().eq('ambulance_id', id);
+      };
+    });
+  }
+
+  function removeMarker(id){
+    if (markers[id]) { markers[id].setMap(null); delete markers[id]; }
+    if (directions[id]) { directions[id].setMap(null); delete directions[id]; }
+    const meta = document.getElementById(`meta_${id}`);
+    if (meta) meta.textContent = "Viaje finalizado";
+  }
+
+  function upsertMarker(row){
+    const id = row.ambulance_id;
+
+    // Si terminó el viaje, remover marcador y salir
+    if (row.finished) { removeMarker(id); return; }
+
+    if (!markers[id] && window.google && window.google.maps){
+      markers[id] = new google.maps.Marker({
+        position: {lat: row.lat, lng: row.lng}, map, title: id,
+        icon: { path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW, scale: 5, rotation: row.heading||0, fillColor:'#3aa0ff', fillOpacity:0.9, strokeColor:'#003b72', strokeWeight:2 }
+      });
+    } else if (markers[id]){
+      markers[id].setPosition({lat: row.lat, lng: row.lng});
+      if (row.heading!=null) markers[id].setIcon({ path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW, scale:5, rotation: row.heading||0, fillColor:'#3aa0ff', fillOpacity:0.9, strokeColor:'#003b72', strokeWeight:2 });
+    }
+    if (map && row.lat && row.lng) map.panTo({lat: row.lat, lng: row.lng});
+
+    const meta = document.getElementById(`meta_${id}`);
+    if (meta){
+      const t = new Date(row.updated_at);
+      const dest = row.dest_address ? ` → ${row.dest_address}` : '';
+      const eta = row.eta_seconds != null ? ` · ETA ${fmtEta(row.eta_seconds)}` : '';
+      const spd = kmh(row.speed);
+      const spdTxt = spd!=null ? ` · Velocidad ${spd} km/h` : '';
+      meta.textContent = `Última señal ${t.toLocaleTimeString()} · ${row.lat?.toFixed?.(5)}, ${row.lng?.toFixed?.(5)}${dest}${eta}${spdTxt}`;
+    }
+
+    if (row.dest_lat && row.dest_lng && window.google && window.google.maps){
+      if (!directions[id]){ directions[id] = new google.maps.DirectionsRenderer({ suppressMarkers:true, preserveViewport:true }); directions[id].setMap(map); }
+      const svc = new google.maps.DirectionsService();
+      svc.route({ origin: { lat: row.lat, lng: row.lng }, destination: { lat: row.dest_lat, lng: row.dest_lng }, travelMode: google.maps.TravelMode.DRIVING })
+        .then(res => directions[id].setDirections(res)).catch(()=>{});
+    } else if (directions[id]){
+      directions[id].setMap(null); delete directions[id];
+    }
+  }
+
+  async function loadAmbulances(){
+    const { data } = await supabase.from('ambulances').select('*').eq('active', true).order('created_at', { ascending: true });
+    ambulances = {}; data?.forEach(a => ambulances[a.id] = a);
+    renderAmbulanceCards();
+  }
+
+  async function loadStatuses(){
+    const { data: rows } = await supabase.from('ambulance_status').select('*');
+    rows?.forEach(upsertMarker);
+  }
+
+  function subscribeRealtime(){
+    supabase.channel('realtime:ambulance_status')
+      .on('postgres_changes', { event:'*', schema:'public', table:'ambulance_status' }, payload => payload.new && upsertMarker(payload.new))
+      .subscribe();
+    supabase.channel('realtime:ambulances')
+      .on('postgres_changes', { event:'*', schema:'public', table:'ambulances' }, () => loadAmbulances())
+      .subscribe();
+  }
+
+  async function addAmbulance(){
+    const id = document.getElementById('newId').value.trim();
+    const label = document.getElementById('newLabel').value.trim();
+    if (!id || !label){ alert('Completa ID y nombre.'); return; }
+    await supabase.from('ambulances').upsert({ id, label, active: true });
+    document.getElementById('newId').value=''; document.getElementById('newLabel').value='';
+  }
+
+  function boot(){
+    initMap();
+    document.getElementById('addBtn').onclick = addAmbulance;
+    Promise.all([loadAmbulances(), loadStatuses()]).then(() => {
+      document.getElementById('connStatus').textContent = '🔌 Conectado';
+    });
+    subscribeRealtime();
+  }
+  window.addEventListener('load', boot);
+})();
+</script>
+</body></html>
