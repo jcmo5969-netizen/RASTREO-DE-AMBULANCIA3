@@ -3,91 +3,377 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AmbuTrack – Conductor</title>
+<title>AmbuTrack – Conductor (funcional)</title>
 <style>
-:root { --bg:#0b1324; --card:#111a33; --text:#e6eefc; --muted:#93a3c7; --accent:#3aa0ff; --danger:#ff5c5c; }
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}
-.topbar{display:flex;align-items:center;justify-content:center;padding:12px 16px;border-bottom:1px solid #1b2747;background:#0f1830}
-.driver{display:grid;gap:12px;padding:14px} .lbl{display:block;font-size:12px;color:var(--muted);margin-bottom:6px} .ambid{font-weight:700;font-size:18px}
-.card{background:var(--card);border:1px solid #1b2747;border-radius:16px;padding:14px}
-input#dest{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #2a3b6b;background:#0f1830;color:var(--text);outline:none}
-button{margin-top:8px;width:100%;padding:10px 12px;border-radius:12px;border:0;background:var(--accent);color:#001127;font-weight:700}
+:root { --bg:#0b1324; --card:#111a33; --text:#e6eefc; --muted:#93a3c7; --accent:#3aa0ff; --danger:#ff5c5c; --ok:#22c55e; --warn:#f59e0b; --ring:#1b2747; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}
+.topbar{display:flex;align-items:center;justify-content:center;padding:12px 16px;border-bottom:1px solid var(--ring);background:#0f1830}
+.driver{display:grid;gap:12px;padding:14px}
+.lbl{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+.ambid{font-weight:700;font-size:18px}
+.card{background:var(--card);border:1px solid var(--ring);border-radius:16px;padding:14px}
+input[type="text"], input[type="number"], input[type="email"], input[type="tel"], textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #2a3b6b;background:#0f1830;color:var(--text);outline:none}
+button{margin-top:8px;width:100%;padding:10px 12px;border-radius:12px;border:0;background:var(--accent);color:#001127;font-weight:700;cursor:pointer}
 .btn-danger{background:var(--danger);color:#1a0000}
-.hint{font-size:12px;color:var(--muted)} .eta{margin-top:8px;font-weight:600} .gps{margin-top:6px;font-size:13px;color:var(--muted)}
+.btn-ok{background:var(--ok);color:#00140a}
+.btn-warn{background:var(--warn);color:#1a1000}
+.hint{font-size:12px;color:var(--muted)}
+.eta{margin-top:8px;font-weight:600}
+.gps{margin-top:6px;font-size:13px;color:var(--muted)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.small{font-size:12px}
+#map{height:48vh;width:100%;border-radius:12px;border:1px solid var(--ring);margin-top:6px}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#0f1830;border:1px solid var(--ring);color:var(--text);padding:10px 14px;border-radius:10px;box-shadow:0 10px 35px rgba(2,6,23,.35);opacity:0;pointer-events:none;transition:.3s}
+.toast.show{opacity:1}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--ring);color:var(--muted)}
+.kv{display:flex;gap:6px;align-items:center}
+.kv .k{width:72px;color:var(--muted);font-size:12px}
+.kv .v{font-weight:600}
 </style>
+<!-- Google Maps (con Places para Autocomplete) -->
 <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBkYhgFQ4YG00vBsCXZI1q8hzTrlNMHpLA&libraries=places"></script>
+<!-- Supabase UMD -->
 <script src="https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 </head>
 <body>
 <header class="topbar"><h1>Conductor – AmbuTrack Quilpué</h1></header>
 <main class="driver">
-  <div class="card"><label class="lbl">Ambulancia</label><div id="ambId" class="ambid">—</div></div>
+  <div class="card">
+    <label class="lbl">Ambulancia</label>
+    <div id="ambId" class="ambid">—</div>
+    <div class="kv small"><span class="k">Paciente</span><span id="patientTag" class="v">—</span></div>
+    <div class="kv small"><span class="k">QR</span><span id="qrHint" class="badge">Reutilizable</span></div>
+  </div>
+
   <div class="card">
     <label for="dest" class="lbl">Coloque la dirección</label>
     <input id="dest" type="text" placeholder="Ej: Av. Los Carrera 200, Quilpué" />
     <button id="goBtn">Calcular ETA</button>
     <div id="eta" class="eta">ETA: —</div>
   </div>
+
   <div class="card">
     <div class="hint">Tu ubicación en tiempo real se está compartiendo con el tablero.</div>
     <div id="gpsStatus" class="gps">GPS: ⏳</div>
+    <div id="map"></div>
     <button id="endBtn" class="btn-danger">Finalizar viaje</button>
   </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 8px">Evolución y Signos Vitales</h3>
+    <div class="grid-3">
+      <div><label class="lbl">Frecuencia Cardíaca (lpm)</label><input id="hr" type="number" inputmode="numeric" placeholder="84"/></div>
+      <div><label class="lbl">Presión Sistólica (mmHg)</label><input id="sys" type="number" inputmode="numeric" placeholder="120"/></div>
+      <div><label class="lbl">Presión Diastólica (mmHg)</label><input id="dia" type="number" inputmode="numeric" placeholder="80"/></div>
+    </div>
+    <div class="grid-3">
+      <div><label class="lbl">Frecuencia Respiratoria (rpm)</label><input id="rr" type="number" inputmode="numeric" placeholder="18"/></div>
+      <div><label class="lbl">SpO₂ (%)</label><input id="spo2" type="number" inputmode="numeric" placeholder="97"/></div>
+      <div><label class="lbl">Temperatura (°C)</label><input id="temp" type="number" step="0.1" inputmode="decimal" placeholder="36.7"/></div>
+    </div>
+    <div class="grid-2">
+      <div><label class="lbl">Escala de Glasgow (3-15)</label><input id="gcs" type="number" inputmode="numeric" placeholder="15"/></div>
+      <div><label class="lbl">Dolor (0-10)</label><input id="pain" type="number" inputmode="numeric" placeholder="3"/></div>
+    </div>
+    <div>
+      <label class="lbl">Evolución / Nota</label>
+      <textarea id="note" rows="3" placeholder="Describa cambios clínicos, intervenciones o hallazgos"></textarea>
+    </div>
+    <div class="grid-2">
+      <button id="saveVitals" class="btn-warn">Guardar evolución</button>
+      <button id="sendVitals" class="btn-ok">Enviar ahora al médico</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="grid-2">
+      <div>
+        <label class="lbl">WhatsApp del médico (E.164 sin +)</label>
+        <input id="waNumber" type="tel" placeholder="56911112222" />
+        <div class="small"><input id="useWA" type="checkbox" checked style="accent-color:var(--accent)"/> Usar WhatsApp</div>
+      </div>
+      <div>
+        <label class="lbl">Email del médico</label>
+        <input id="emailMd" type="email" placeholder="medico@hospital.cl" />
+        <div class="small"><input id="useEmail" type="checkbox" style="accent-color:var(--accent)"/> Usar Email</div>
+      </div>
+    </div>
+    <div>
+      <label class="lbl">Webhook (opcional) – envío automático server-side</label>
+      <input id="webhook" type="text" placeholder="https://tu-servidor/notify" />
+      <div class="small"><input id="useWebhook" type="checkbox" style="accent-color:var(--accent)"/> Usar Webhook</div>
+      <div class="hint">Los datos de contacto quedan guardados en este dispositivo.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 8px">Últimos registros enviados</h3>
+    <div id="timeline" class="small"></div>
+  </div>
 </main>
-<script>window.SUPABASE_URL="https://flgjxrnmojxjokmenxjm.supabase.co"; window.SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsZ2p4cm5tb2p4am9rbWVueGptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxOTIyNDMsImV4cCI6MjA3NDc2ODI0M30.qhw9L6lEI5Kzxq1vYtQvNPjERJqIXnsJkJn-tj4RNbM";</script>
+<div id="toast" class="toast"></div>
+
 <script>
+// ====== CONFIGURA TUS CLAVES ======
+window.SUPABASE_URL = "https://flgjxrnmojxjokmenxjm.supabase.co";
+window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsZ2p4cm5tb2p4am9rbWVueGptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxOTIyNDMsImV4cCI6MjA3NDc2ODI0M30.qhw9L6lEI5Kzxq1vYtQvNPjERJqIXnsJkJn-tj4RNbM";
+
 (function(){
+  'use strict';
   const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-  const ambIdEl=document.getElementById('ambId'), destEl=document.getElementById('dest'), goBtn=document.getElementById('goBtn'), etaEl=document.getElementById('eta'), gpsEl=document.getElementById('gpsStatus'), endBtn=document.getElementById('endBtn');
-  const url=new URL(window.location.href); const ambulanceId=url.searchParams.get('amb')||'SIN_ID'; ambIdEl.textContent=ambulanceId; let currentPos=null;
+
+  // UI refs
+  const ambIdEl = document.getElementById('ambId');
+  const patientTag = document.getElementById('patientTag');
+  const destEl = document.getElementById('dest');
+  const goBtn = document.getElementById('goBtn');
+  const etaEl = document.getElementById('eta');
+  const gpsEl = document.getElementById('gpsStatus');
+  const endBtn = document.getElementById('endBtn');
+  const timeline = document.getElementById('timeline');
+
+  // Vitals refs
+  const hrEl=document.getElementById('hr');
+  const sysEl=document.getElementById('sys');
+  const diaEl=document.getElementById('dia');
+  const rrEl=document.getElementById('rr');
+  const spo2El=document.getElementById('spo2');
+  const tempEl=document.getElementById('temp');
+  const gcsEl=document.getElementById('gcs');
+  const painEl=document.getElementById('pain');
+  const noteEl=document.getElementById('note');
+
+  // Notify refs
+  const waEl=document.getElementById('waNumber');
+  const emailEl=document.getElementById('emailMd');
+  const webhookEl=document.getElementById('webhook');
+  const useWA=document.getElementById('useWA');
+  const useEmail=document.getElementById('useEmail');
+  const useWebhook=document.getElementById('useWebhook');
+
+  // URL params
+  const url = new URL(window.location.href);
+  const ambulanceId = url.searchParams.get('amb') || 'SIN_ID';
+  const patientName = url.searchParams.get('patient') || '';
+  const initPhone = url.searchParams.get('mdk') || '';
+  const initEmail = url.searchParams.get('email') || '';
+  const initWebhook = url.searchParams.get('webhook') || '';
+
+  ambIdEl.textContent = ambulanceId;
+  patientTag.textContent = patientName || '—';
+
+  // Persistencia contactos
+  waEl.value = localStorage.getItem('notify_phone') || initPhone;
+  emailEl.value = localStorage.getItem('notify_email') || initEmail;
+  webhookEl.value = localStorage.getItem('notify_webhook') || initWebhook;
+
+  // Estado
+  let currentPos = null; // Geoloc
+  let map = null, meMarker = null, accCircle = null, dirRenderer = null; // Mapa
+  let lastRouteInfo = { dest_address:null, dest_lat:null, dest_lng:null, eta_seconds:null };
+  let lastGpsUpsert = 0; // rate limit
+
+  function toast(msg, t=2600){
+    const el = document.getElementById('toast');
+    el.textContent = msg; el.classList.add('show');
+    setTimeout(()=>el.classList.remove('show'), t);
+  }
+
+  function getSafeInt(el){ const v=parseInt(el.value,10); return Number.isFinite(v)?v:null; }
+  function getSafeFloat(el){ const v=parseFloat(el.value); return Number.isFinite(v)?v:null; }
+
+  function ensureMap(){
+    if(map || !(window.google && google.maps)) return;
+    const start = currentPos? {lat:currentPos.coords.latitude,lng:currentPos.coords.longitude} : {lat:-33.045,lng:-71.443};
+    map = new google.maps.Map(document.getElementById('map'), { center:start, zoom: currentPos?15:12, styles:[{featureType:'poi',stylers:[{visibility:'off'}]}] });
+    meMarker = new google.maps.Marker({ map, position:start, title:'Mi ubicación' });
+    accCircle = new google.maps.Circle({ map, center:start, radius: 50, strokeOpacity:0.2, fillOpacity:0.05 });
+    dirRenderer = new google.maps.DirectionsRenderer({ map });
+  }
 
   async function upsertStatus(extra={}){
     if(!currentPos) return;
-    const payload={
+    const now = Date.now();
+    if(now - lastGpsUpsert < 3000 && !extra.force) return; // limitar a cada 3s salvo writes importantes
+    lastGpsUpsert = now;
+    const payload = {
       ambulance_id: ambulanceId,
       lat: currentPos.coords.latitude,
       lng: currentPos.coords.longitude,
       heading: currentPos.coords.heading,
       speed: currentPos.coords.speed,
       updated_at: new Date().toISOString(),
-      finished: false, // <-- al reportar posición, reactivamos el viaje (permite reusar el mismo QR)
+      finished: false,
+      ...lastRouteInfo,
       ...extra
     };
-    await supabase.from('ambulance_status').upsert(payload, { onConflict: 'ambulance_id' });
+    await supabase.from('ambulance_status').upsert(payload,{ onConflict:'ambulance_id' });
   }
 
   function watchGPS(){
-    if(!('geolocation' in navigator)){ gpsEl.textContent='GPS: no disponible en este dispositivo'; return; }
+    if(!('geolocation' in navigator)){
+      gpsEl.textContent='GPS: no disponible en este dispositivo';
+      return;
+    }
     gpsEl.textContent='GPS: solicitando permiso…';
-    navigator.geolocation.watchPosition(pos => {
-      currentPos=pos; gpsEl.textContent=`GPS: OK · ${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`;
+    navigator.geolocation.watchPosition(pos=>{
+      currentPos = pos;
+      gpsEl.textContent = `GPS: OK · ${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`;
+      ensureMap();
+      if(map && meMarker){
+        const p={ lat: pos.coords.latitude, lng: pos.coords.longitude };
+        meMarker.setPosition(p);
+        if(accCircle){ accCircle.setCenter(p); accCircle.setRadius(pos.coords.accuracy||50); }
+        if(map.getZoom() < 14){ map.setCenter(p); map.setZoom(15); }
+      }
       upsertStatus();
-    }, err => { gpsEl.textContent=`GPS error: ${err.message}`; }, { enableHighAccuracy:true, maximumAge:1000, timeout:10000 });
+    }, err=>{
+      gpsEl.textContent=`GPS error: ${err.message}`;
+    }, { enableHighAccuracy:true, maximumAge:1000, timeout:10000 });
   }
 
   async function geocodeAndEta(){
-    const destStr=destEl.value?.trim(); if(!destStr){ etaEl.textContent='ETA: ingrese una dirección válida'; return; }
+    const destStr = destEl.value?.trim();
+    if(!destStr){ etaEl.textContent='ETA: ingrese una dirección válida'; return; }
     if(!currentPos){ etaEl.textContent='ETA: esperando tu ubicación…'; return; }
-    const svc=new google.maps.DirectionsService(); const origin={ lat: currentPos.coords.latitude, lng: currentPos.coords.longitude };
+    if(!(window.google && google.maps && google.maps.DirectionsService)){
+      etaEl.textContent='ETA: Google Maps no cargó (revisa tu API key)'; return;
+    }
+    ensureMap();
     try{
+      const svc = new google.maps.DirectionsService();
+      const origin={ lat: currentPos.coords.latitude, lng: currentPos.coords.longitude };
       const res=await svc.route({ origin, destination:destStr, travelMode: google.maps.TravelMode.DRIVING });
-      const leg=res.routes[0]?.legs[0]; if(!leg){ etaEl.textContent='ETA: no se pudo calcular'; return; }
+      const leg=res.routes[0]?.legs[0];
+      if(!leg){ etaEl.textContent='ETA: no se pudo calcular'; return; }
       const etaSeconds=leg.duration.value;
       etaEl.textContent=`ETA: ${leg.duration.text} (${leg.distance.text})`;
-      await upsertStatus({ dest_address:destStr, dest_lat:leg.end_location.lat(), dest_lng:leg.end_location.lng(), eta_seconds:etaSeconds });
-    }catch(e){ etaEl.textContent='ETA: error al calcular ruta'; }
+      lastRouteInfo={ dest_address:destStr, dest_lat:leg.end_location.lat(), dest_lng:leg.end_location.lng(), eta_seconds:etaSeconds };
+      if(dirRenderer){ dirRenderer.setMap(map); dirRenderer.setDirections(res); }
+      const b=new google.maps.LatLngBounds();
+      res.routes[0].overview_path.forEach(pt=> b.extend(pt));
+      map.fitBounds(b);
+      await upsertStatus({ force:true });
+    }catch(e){
+      console.error(e); etaEl.textContent='ETA: error al calcular ruta';
+    }
   }
 
   async function endTrip(){
     await supabase.from('ambulance_status')
-      .update({ finished: true, dest_address: null, dest_lat: null, dest_lng: null, eta_seconds: null })
+      .update({ finished:true, dest_address:null, dest_lat:null, dest_lng:null, eta_seconds:null })
       .eq('ambulance_id', ambulanceId);
     alert('🚨 Viaje finalizado. Para un nuevo viaje, vuelve a escanear el mismo QR.');
   }
 
+  function composeMessage(v){
+    const ts = new Date().toLocaleString();
+    const etaMin = v.eta_seconds != null ? Math.round(v.eta_seconds/60) + ' min' : '—';
+    const mapsLink = v.origin_lat && v.origin_lng ? `https://maps.google.com/?q=${v.origin_lat},${v.origin_lng}` : '';
+    let msg = `AmbuTrack – Evolución en ruta\n`+
+      `Ambulancia: ${v.ambulance_id}\n`+
+      (v.patient_name?`Paciente: ${v.patient_name}\n`:``)+
+      (v.dest_address?`Destino: ${v.dest_address}\n`:``)+
+      `ETA: ${etaMin}\n`+
+      `\nSignos vitales:`+
+      (v.hr!=null?`\n• FC: ${v.hr} lpm`:``)+
+      (v.sys!=null && v.dia!=null?`\n• PA: ${v.sys}/${v.dia} mmHg`:``)+
+      (v.rr!=null?`\n• FR: ${v.rr} rpm`:``)+
+      (v.spo2!=null?`\n• SpO₂: ${v.spo2}%`:``)+
+      (v.temp!=null?`\n• Temp: ${v.temp} °C`:``)+
+      (v.gcs!=null?`\n• GCS: ${v.gcs}`:``)+
+      (v.pain!=null?`\n• Dolor: ${v.pain}/10`:``)+
+      (v.note?`\n\nEvolución: ${v.note}`:``)+
+      (mapsLink?`\n\nUbicación: ${mapsLink}`:``)+
+      `\nHora: ${ts}`;
+    return msg;
+  }
+
+  function pushTimeline(v){
+    const item=document.createElement('div');
+    item.style.border='1px dashed var(--ring)'; item.style.borderRadius='12px'; item.style.padding='8px';
+    item.innerHTML = `<div><strong>${new Date().toLocaleTimeString()}</strong> · ${v.patient_name||'Paciente sin nombre'}</div>
+      <div class='small'>FC ${v.hr??'—'} | PA ${v.sys??'—'}/${v.dia??'—'} | FR ${v.rr??'—'} | SpO₂ ${v.spo2??'—'} | T° ${v.temp??'—'} | GCS ${v.gcs??'—'} | Dolor ${v.pain??'—'}</div>
+      ${v.note?`<div class='small' style='margin-top:4px'>${v.note}</div>`:''}`;
+    timeline.prepend(item);
+  }
+
+  async function notifyDoctor(vitals){
+    // Guarda preferencias
+    localStorage.setItem('notify_phone', waEl.value.trim());
+    localStorage.setItem('notify_email', emailEl.value.trim());
+    localStorage.setItem('notify_webhook', webhookEl.value.trim());
+
+    const msg = composeMessage(vitals);
+
+    // Webhook
+    if(useWebhook.checked && webhookEl.value.trim()){
+      try{ await fetch(webhookEl.value.trim(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type:'ambulance_vitals', payload:vitals, message:msg }) }); }catch(e){ console.error('Webhook error', e); }
+    }
+    // WhatsApp
+    if(useWA.checked && waEl.value.trim()){
+      const phone = waEl.value.trim(); const waUrl = `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(msg)}`; window.open(waUrl, '_blank');
+    }
+    // Email
+    if(useEmail.checked && emailEl.value.trim()){
+      const subject = `AmbuTrack – ${ambulanceId} – Evolución`;
+      const mailto = `mailto:${encodeURIComponent(emailEl.value.trim())}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(msg)}`;
+      window.location.href = mailto;
+    }
+  }
+
+  async function insertVitals({notify=false}){
+    if(!currentPos){ toast('Aún no hay ubicación. Activa el GPS.'); return; }
+    const vitals = {
+      ambulance_id: ambulanceId,
+      patient_name: patientName || null,
+      hr: getSafeInt(hrEl), sys: getSafeInt(sysEl), dia: getSafeInt(diaEl), rr: getSafeInt(rrEl), spo2: getSafeInt(spo2El), temp: getSafeFloat(tempEl), gcs: getSafeInt(gcsEl), pain: getSafeInt(painEl), note: noteEl.value?.trim() || null,
+      origin_lat: currentPos.coords.latitude, origin_lng: currentPos.coords.longitude,
+      dest_address: lastRouteInfo.dest_address, dest_lat: lastRouteInfo.dest_lat, dest_lng: lastRouteInfo.dest_lng,
+      eta_seconds: lastRouteInfo.eta_seconds
+    };
+
+    const { data, error } = await supabase.from('ambulance_vitals').insert(vitals).select('id');
+    if(error){ console.error(error); toast('Error al guardar evolución.'); return; }
+    await upsertStatus({ last_vitals_at: new Date().toISOString(), force:true });
+    pushTimeline(vitals);
+    toast('Evolución guardada.');
+
+    if(notify){
+      await notifyDoctor(vitals);
+      const id = data?.[0]?.id; if(id){ await supabase.from('ambulance_vitals').update({ notified:true }).eq('id', id); }
+    }
+  }
+
+  // ====== Eventos UI ======
   goBtn.addEventListener('click', geocodeAndEta);
   endBtn.addEventListener('click', endTrip);
-  window.addEventListener('load', watchGPS);
-  try{ new google.maps.places.Autocomplete(destEl, { componentRestrictions:{ country:'cl' } }); }catch(e){}
-})();</script>
-</body></html>
+  document.getElementById('saveVitals').addEventListener('click', ()=> insertVitals({notify:false}));
+  document.getElementById('sendVitals').addEventListener('click', ()=> insertVitals({notify:true}));
+
+  // ====== Self-tests (no rompen la página si fallan) ======
+  function runSelfTests(){
+    try {
+      const m = composeMessage({ambulance_id:'TEST-1', patient_name:'Ana', eta_seconds:600, origin_lat:-33, origin_lng:-71, hr:80, sys:120, dia:80, rr:16, spo2:98, temp:36.7, gcs:15, pain:2});
+      console.assert(m.includes('Ambulancia: TEST-1'), 'composeMessage debe incluir ambulancia');
+      console.assert(m.includes('FC: 80'), 'composeMessage debe incluir FC');
+    } catch(e){ console.warn('Self-test composeMessage falló', e); }
+    try {
+      // Prueba de parseo de query básica
+      const testUrl = new URL('https://x?amb=A1&patient=Juan&mdk=56912345678&email=a@b.cl');
+      console.assert(testUrl.searchParams.get('amb')==='A1', 'parse amb');
+    } catch(e){ console.warn('Self-test URLSearchParams falló', e); }
+  }
+
+  // ====== Inicio ======
+  window.addEventListener('load', ()=>{
+    runSelfTests();
+    watchGPS();
+    try{ if(window.google && google.maps && google.maps.places){ new google.maps.places.Autocomplete(destEl, { componentRestrictions:{ country:'cl' } }); } }catch(e){ console.warn('Autocomplete no disponible'); }
+  });
+})();
+</script>
+</body>
+</html>
