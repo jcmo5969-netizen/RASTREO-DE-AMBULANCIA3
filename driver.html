@@ -97,6 +97,7 @@ button{margin-top:8px;width:100%;padding:10px 12px;border-radius:12px;border:0;b
         <label class="lbl">WhatsApp del médico (E.164 sin +)</label>
         <input id="waNumber" type="tel" placeholder="56911112222" />
         <div class="small"><input id="useWA" type="checkbox" checked style="accent-color:var(--accent)"/> Usar WhatsApp</div>
+        <a id="waManual" class="small" style="display:none;margin-top:6px" target="_blank" rel="noopener">Abrir WhatsApp manualmente</a>
       </div>
       <div>
         <label class="lbl">Email del médico</label>
@@ -120,7 +121,7 @@ button{margin-top:8px;width:100%;padding:10px 12px;border-radius:12px;border:0;b
 <div id="toast" class="toast"></div>
 
 <script>
-// ====== CONFIGURA TUS CLAVES ======
+/* ====== CONFIGURA TUS CLAVES ====== */
 window.SUPABASE_URL = "https://flgjxrnmojxjokmenxjm.supabase.co";
 window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsZ2p4cm5tb2p4am9rbWVueGptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxOTIyNDMsImV4cCI6MjA3NDc2ODI0M30.qhw9L6lEI5Kzxq1vYtQvNPjERJqIXnsJkJn-tj4RNbM";
 
@@ -157,6 +158,7 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
   const useWA=document.getElementById('useWA');
   const useEmail=document.getElementById('useEmail');
   const useWebhook=document.getElementById('useWebhook');
+  const waManual=document.getElementById('waManual');
 
   // URL params
   const url = new URL(window.location.href);
@@ -350,16 +352,25 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
     return msg;
   }
 
-  function pushTimeline(v){
-    const item=document.createElement('div');
-    item.style.border='1px dashed var(--ring)'; item.style.borderRadius='12px'; item.style.padding='8px';
-    item.innerHTML = `<div><strong>${new Date().toLocaleTimeString()}</strong> · ${v.patient_name||'Paciente sin nombre'}</div>
-      <div class='small'>FC ${v.hr??'—'} | PA ${v.sys??'—'}/${v.dia??'—'} | FR ${v.rr??'—'} | SpO₂ ${v.spo2??'—'} | T° ${v.temp??'—'} | GCS ${v.gcs??'—'} | Dolor ${v.pain??'—'}</div>
-      ${v.note?`<div class='small' style='margin-top:4px'>${v.note}</div>`:''}`;
-    timeline.prepend(item);
+  // ====== WhatsApp robusto ======
+  function normalizePhoneCL(raw){
+    if(!raw) return null;
+    const d = (''+raw).replace(/\D/g,''); // solo dígitos
+    if(d.startsWith('56')) return d;            // 56XXXXXXXXX / 569XXXXXXXX
+    if(d.length===9 && d.startsWith('9')) return '56'+d; // 9XXXXXXXX -> 569XXXXXXXX
+    if(d.length===8) return '569'+d;            // XXXXXXXX -> 569XXXXXXXX
+    return d; // otros países
+  }
+  function buildWAUrl(phone, msg){
+    const p = encodeURIComponent(phone);
+    const t = encodeURIComponent(msg);
+    return {
+      primary: `https://wa.me/${p}?text=${t}`,
+      fallback: `https://api.whatsapp.com/send?phone=${p}&text=${t}`
+    };
   }
 
-  async function notifyDoctor(vitals){
+  async function notifyDoctor(vitals, waStubWin){
     // Guarda preferencias
     localStorage.setItem('notify_phone', waEl.value.trim());
     localStorage.setItem('notify_email', emailEl.value.trim());
@@ -376,13 +387,40 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
         });
       }catch(e){ console.error('Webhook error', e); }
     }
-    // WhatsApp
-    if(useWA.checked && waEl.value.trim()){
-      const phone = waEl.value.trim();
-      const waUrl = `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(msg)}`;
-      window.open(waUrl, '_blank');
+
+    // WhatsApp (abre siempre)
+    if(useWA.checked){
+      const phone = normalizePhoneCL(waEl.value.trim());
+      if(!phone){
+        toast('Número de WhatsApp vacío o inválido');
+      }else{
+        const { primary, fallback } = buildWAUrl(phone, msg);
+        let opened = false;
+
+        try{
+          if(waStubWin){
+            waStubWin.location = primary; // usa la pestaña creada por el gesto del usuario
+            opened = true;
+          }
+        }catch(_){}
+
+        if(!opened){
+          try{ const w = window.open(primary, '_blank'); opened = !!w; }catch(_){}
+        }
+        if(!opened){
+          try{ window.location.assign(primary); opened = true; }catch(_){}
+        }
+        if(!opened){
+          try{ window.location.assign(fallback); opened = true; }catch(_){}
+        }
+        if(!opened){
+          if(waManual){ waManual.href = fallback; waManual.style.display = 'inline-block'; }
+          toast('No pude abrir WhatsApp automáticamente. Usa el enlace manual.');
+        }
+      }
     }
-    // Email
+
+    // Email (opcional)
     if(useEmail.checked && emailEl.value.trim()){
       const subject = `AmbuTrack – ${ambulanceId} – Evolución`;
       const mailto = `mailto:${encodeURIComponent(emailEl.value.trim())}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(msg)}`;
@@ -390,9 +428,24 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
     }
   }
 
+  function pushTimeline(v){
+    const item=document.createElement('div');
+    item.style.border='1px dashed var(--ring)'; item.style.borderRadius='12px'; item.style.padding='8px';
+    item.innerHTML = `<div><strong>${new Date().toLocaleTimeString()}</strong> · ${v.patient_name||'Paciente sin nombre'}</div>
+      <div class='small'>FC ${v.hr??'—'} | PA ${v.sys??'—'}/${v.dia??'—'} | FR ${v.rr??'—'} | SpO₂ ${v.spo2??'—'} | T° ${v.temp??'—'} | GCS ${v.gcs??'—'} | Dolor ${v.pain??'—'}</div>
+      ${v.note?`<div class='small' style='margin-top:4px'>${v.note}</div>`:''}`;
+    timeline.prepend(item);
+  }
+
   // Guardar evolución: primero Supabase; si falla, encola y NO notifica
-  async function insertVitals({notify=false}){
+  async function insertVitals({notify=false, openStub=false}){
     if(!currentPos){ toast('Aún no hay ubicación. Activa el GPS.'); return; }
+
+    // pestaña "stub" para evitar bloqueo de pop-ups (se abre por el gesto del usuario)
+    let waStubWin = null;
+    if(notify && openStub){
+      try{ waStubWin = window.open('', '_blank'); }catch(_){}
+    }
 
     const vitals = {
       ambulance_id: ambulanceId,
@@ -414,9 +467,11 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
       toast('Evolución guardada en Supabase.');
 
       if(notify){
-        await notifyDoctor(vitals);
+        await notifyDoctor(vitals, waStubWin);
         const id = data?.[0]?.id;
         if(id){ await supabase.from('ambulance_vitals').update({ notified:true }).eq('id', id); }
+      }else{
+        if(waStubWin) try{ waStubWin.close(); }catch(_){}
       }
     }catch(e){
       console.error('Supabase insert error:', e);
@@ -424,12 +479,13 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
       toast('Error al guardar evolución: ' + msg + ' · Se encoló para subir luego.');
       enqueue({ type:'vitals_insert', payload: vitals });
       pushTimeline(vitals);
+      if(waStubWin) try{ waStubWin.close(); }catch(_){}
     }
   }
 
   // ====== Eventos UI ======
   document.getElementById('saveVitals').addEventListener('click', ()=> insertVitals({notify:false}));
-  document.getElementById('sendVitals').addEventListener('click', ()=> insertVitals({notify:true}));
+  document.getElementById('sendVitals').addEventListener('click', ()=> insertVitals({notify:true, openStub:true}));
   goBtn.addEventListener('click', geocodeAndEta);
   endBtn.addEventListener('click', endTrip);
 
