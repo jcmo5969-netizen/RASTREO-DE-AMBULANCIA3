@@ -8,7 +8,7 @@
 :root { --bg:#0b1324; --card:#111a33; --text:#e6eefc; --muted:#93a3c7; --accent:#3aa0ff; --danger:#ff5c5c; --ok:#22c55e; --warn:#f59e0b; --ring:#1b2747; }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}
-.topbar{display:flex;align-items:center;justify-content:center;padding:12px 16px;border-bottom:1px solid var(--ring);background:#0f1830}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--ring);background:#0f1830}
 .driver{display:grid;gap:12px;padding:14px}
 .lbl{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
 .ambid{font-weight:700;font-size:18px}
@@ -38,7 +38,11 @@ button{margin-top:8px;width:100%;padding:10px 12px;border-radius:12px;border:0;b
 <script src="https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 </head>
 <body>
-<header class="topbar"><h1>Conductor – AmbuTrack Quilpué</h1></header>
+<header class="topbar">
+  <h1 style="margin:0">Conductor – AmbuTrack Quilpué</h1>
+  <div class="small" id="syncInfo">Pendientes: 0</div>
+</header>
+
 <main class="driver">
   <div class="card">
     <label class="lbl">Ambulancia</label>
@@ -133,6 +137,7 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
   const gpsEl = document.getElementById('gpsStatus');
   const endBtn = document.getElementById('endBtn');
   const timeline = document.getElementById('timeline');
+  const syncInfo = document.getElementById('syncInfo');
 
   // Vitals refs
   const hrEl=document.getElementById('hr');
@@ -169,13 +174,51 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
   emailEl.value = localStorage.getItem('notify_email') || initEmail;
   webhookEl.value = localStorage.getItem('notify_webhook') || initWebhook;
 
-  // Estado
-  let currentPos = null; // Geoloc
-  let map = null, meMarker = null, accCircle = null, dirRenderer = null; // Mapa
-  let lastRouteInfo = { dest_address:null, dest_lat:null, dest_lng:null, eta_seconds:null };
-  let lastGpsUpsert = 0; // rate limit
+  // ===== OUTBOX (cola offline) =====
+  const OUTBOX_KEY = 'ambu_outbox_v1';
+  function loadOutbox(){ try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]'); } catch { return []; } }
+  function saveOutbox(items){ localStorage.setItem(OUTBOX_KEY, JSON.stringify(items)); refreshPending(); }
+  function enqueue(job){ const q = loadOutbox(); q.push(job); saveOutbox(q); }
+  function dequeue(){ const q = loadOutbox(); const item = q.shift(); saveOutbox(q); return item; }
+  function hasOutbox(){ return loadOutbox().length > 0; }
+  function refreshPending(){ syncInfo.textContent = 'Pendientes: ' + loadOutbox().length; }
 
-  function toast(msg, t=2600){
+  async function syncOutbox(){
+    if (!navigator.onLine) return;
+    let safety = 20;
+    while (hasOutbox() && safety-- > 0){
+      const job = dequeue();
+      try{
+        if(job?.type === 'vitals_insert'){
+          const { error } = await supabase.from('ambulance_vitals').insert(job.payload);
+          if(error) throw error;
+        } else if(job?.type === 'status_upsert'){
+          const { error } = await supabase.from('ambulance_status').upsert(job.payload, { onConflict:'ambulance_id' });
+          if(error) throw error;
+        } else if(job?.type === 'status_finish'){
+          const { error } = await supabase.from('ambulance_status')
+            .update(job.payload).eq('ambulance_id', job.ambulance_id);
+          if(error) throw error;
+        }
+      }catch(e){
+        const rest = loadOutbox();
+        rest.unshift(job);
+        saveOutbox(rest);
+        break;
+      }
+    }
+  }
+  window.addEventListener('online', syncOutbox);
+  setInterval(syncOutbox, 15000);
+  refreshPending();
+
+  // Estado
+  let currentPos = null;
+  let map = null, meMarker = null, accCircle = null, dirRenderer = null;
+  let lastRouteInfo = { dest_address:null, dest_lat:null, dest_lng:null, eta_seconds:null };
+  let lastGpsUpsert = 0;
+
+  function toast(msg, t=3200){
     const el = document.getElementById('toast');
     el.textContent = msg; el.classList.add('show');
     setTimeout(()=>el.classList.remove('show'), t);
@@ -193,11 +236,13 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
     dirRenderer = new google.maps.DirectionsRenderer({ map });
   }
 
+  // ===== ESCRITURAS QUE VAN "SÍ O SÍ" A SUPABASE =====
   async function upsertStatus(extra={}){
     if(!currentPos) return;
     const now = Date.now();
-    if(now - lastGpsUpsert < 3000 && !extra.force) return; // limitar a cada 3s salvo writes importantes
+    if(now - lastGpsUpsert < 3000 && !extra.force) return;
     lastGpsUpsert = now;
+
     const payload = {
       ambulance_id: ambulanceId,
       lat: currentPos.coords.latitude,
@@ -209,7 +254,15 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
       ...lastRouteInfo,
       ...extra
     };
-    await supabase.from('ambulance_status').upsert(payload,{ onConflict:'ambulance_id' });
+
+    try{
+      const { error } = await supabase.from('ambulance_status').upsert(payload, { onConflict:'ambulance_id' });
+      if (error) throw error;
+    }catch(e){
+      console.error('Supabase upsert error:', e);
+      toast('Error estado GPS: ' + (e.message || 'ver consola'));
+      enqueue({ type:'status_upsert', payload });
+    }
   }
 
   function watchGPS(){
@@ -262,10 +315,16 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
   }
 
   async function endTrip(){
-    await supabase.from('ambulance_status')
-      .update({ finished:true, dest_address:null, dest_lat:null, dest_lng:null, eta_seconds:null })
-      .eq('ambulance_id', ambulanceId);
-    alert('🚨 Viaje finalizado. Para un nuevo viaje, vuelve a escanear el mismo QR.');
+    const payload = { finished:true, dest_address:null, dest_lat:null, dest_lng:null, eta_seconds:null };
+    try{
+      const { error } = await supabase.from('ambulance_status').update(payload).eq('ambulance_id', ambulanceId);
+      if(error) throw error;
+      alert('✅ Viaje finalizado (registrado en Supabase). Reutiliza el mismo QR para un nuevo viaje.');
+    }catch(e){
+      console.error('finish error:', e);
+      enqueue({ type:'status_finish', ambulance_id: ambulanceId, payload });
+      alert('⚠️ Sin conexión/RLS: se encoló “finalizar viaje” y se subirá a Supabase automáticamente.');
+    }
   }
 
   function composeMessage(v){
@@ -310,11 +369,18 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
 
     // Webhook
     if(useWebhook.checked && webhookEl.value.trim()){
-      try{ await fetch(webhookEl.value.trim(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type:'ambulance_vitals', payload:vitals, message:msg }) }); }catch(e){ console.error('Webhook error', e); }
+      try{
+        await fetch(webhookEl.value.trim(), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ type:'ambulance_vitals', payload:vitals, message:msg })
+        });
+      }catch(e){ console.error('Webhook error', e); }
     }
     // WhatsApp
     if(useWA.checked && waEl.value.trim()){
-      const phone = waEl.value.trim(); const waUrl = `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(msg)}`; window.open(waUrl, '_blank');
+      const phone = waEl.value.trim();
+      const waUrl = `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(msg)}`;
+      window.open(waUrl, '_blank');
     }
     // Email
     if(useEmail.checked && emailEl.value.trim()){
@@ -324,54 +390,68 @@ window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXB
     }
   }
 
+  // Guardar evolución: primero Supabase; si falla, encola y NO notifica
   async function insertVitals({notify=false}){
     if(!currentPos){ toast('Aún no hay ubicación. Activa el GPS.'); return; }
+
     const vitals = {
       ambulance_id: ambulanceId,
       patient_name: patientName || null,
-      hr: getSafeInt(hrEl), sys: getSafeInt(sysEl), dia: getSafeInt(diaEl), rr: getSafeInt(rrEl), spo2: getSafeInt(spo2El), temp: getSafeFloat(tempEl), gcs: getSafeInt(gcsEl), pain: getSafeInt(painEl), note: noteEl.value?.trim() || null,
+      hr: getSafeInt(hrEl), sys: getSafeInt(sysEl), dia: getSafeInt(diaEl),
+      rr: getSafeInt(rrEl), spo2: getSafeInt(spo2El), temp: getSafeFloat(tempEl),
+      gcs: getSafeInt(gcsEl), pain: getSafeInt(painEl), note: noteEl.value?.trim() || null,
       origin_lat: currentPos.coords.latitude, origin_lng: currentPos.coords.longitude,
       dest_address: lastRouteInfo.dest_address, dest_lat: lastRouteInfo.dest_lat, dest_lng: lastRouteInfo.dest_lng,
       eta_seconds: lastRouteInfo.eta_seconds
     };
 
-    const { data, error } = await supabase.from('ambulance_vitals').insert(vitals).select('id');
-    if(error){ console.error(error); toast('Error al guardar evolución.'); return; }
-    await upsertStatus({ last_vitals_at: new Date().toISOString(), force:true });
-    pushTimeline(vitals);
-    toast('Evolución guardada.');
+    try{
+      const { data, error } = await supabase.from('ambulance_vitals').insert(vitals).select('id');
+      if(error) throw error;
 
-    if(notify){
-      await notifyDoctor(vitals);
-      const id = data?.[0]?.id; if(id){ await supabase.from('ambulance_vitals').update({ notified:true }).eq('id', id); }
+      await upsertStatus({ last_vitals_at: new Date().toISOString(), force:true });
+      pushTimeline(vitals);
+      toast('Evolución guardada en Supabase.');
+
+      if(notify){
+        await notifyDoctor(vitals);
+        const id = data?.[0]?.id;
+        if(id){ await supabase.from('ambulance_vitals').update({ notified:true }).eq('id', id); }
+      }
+    }catch(e){
+      console.error('Supabase insert error:', e);
+      const msg = e?.message || e?.hint || 'Error desconocido';
+      toast('Error al guardar evolución: ' + msg + ' · Se encoló para subir luego.');
+      enqueue({ type:'vitals_insert', payload: vitals });
+      pushTimeline(vitals);
     }
   }
 
   // ====== Eventos UI ======
-  goBtn.addEventListener('click', geocodeAndEta);
-  endBtn.addEventListener('click', endTrip);
   document.getElementById('saveVitals').addEventListener('click', ()=> insertVitals({notify:false}));
   document.getElementById('sendVitals').addEventListener('click', ()=> insertVitals({notify:true}));
+  goBtn.addEventListener('click', geocodeAndEta);
+  endBtn.addEventListener('click', endTrip);
 
-  // ====== Self-tests (no rompen la página si fallan) ======
+  // ====== Inicio ======
   function runSelfTests(){
     try {
       const m = composeMessage({ambulance_id:'TEST-1', patient_name:'Ana', eta_seconds:600, origin_lat:-33, origin_lng:-71, hr:80, sys:120, dia:80, rr:16, spo2:98, temp:36.7, gcs:15, pain:2});
       console.assert(m.includes('Ambulancia: TEST-1'), 'composeMessage debe incluir ambulancia');
       console.assert(m.includes('FC: 80'), 'composeMessage debe incluir FC');
     } catch(e){ console.warn('Self-test composeMessage falló', e); }
-    try {
-      // Prueba de parseo de query básica
-      const testUrl = new URL('https://x?amb=A1&patient=Juan&mdk=56912345678&email=a@b.cl');
-      console.assert(testUrl.searchParams.get('amb')==='A1', 'parse amb');
-    } catch(e){ console.warn('Self-test URLSearchParams falló', e); }
   }
 
-  // ====== Inicio ======
   window.addEventListener('load', ()=>{
     runSelfTests();
     watchGPS();
-    try{ if(window.google && google.maps && google.maps.places){ new google.maps.places.Autocomplete(destEl, { componentRestrictions:{ country:'cl' } }); } }catch(e){ console.warn('Autocomplete no disponible'); }
+    try{
+      if(window.google && google.maps && google.maps.places){
+        new google.maps.places.Autocomplete(destEl, { componentRestrictions:{ country:'cl' } });
+      }
+    }catch(e){ console.warn('Autocomplete no disponible'); }
+    refreshPending();
+    syncOutbox();
   });
 })();
 </script>
